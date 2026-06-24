@@ -6,7 +6,6 @@ from datetime import datetime
 from dateutil.relativedelta import relativedelta
 
 import pdfplumber
-import pandas as pd
 from flask import Flask, request, jsonify
 
 app = Flask(__name__)
@@ -103,23 +102,48 @@ def analyse_pdf_file(pdf_path):
     if not rows:
         raise ValueError("No item expiry/quantity records found from PDF.")
 
-    raw_df = pd.DataFrame(rows)
+    grouped = {}
+
+    for row in rows:
+        key = (row["Item Code"], row["Item Description"])
+
+        if key not in grouped:
+            grouped[key] = {
+                "Item Code": row["Item Code"],
+                "Item Description": row["Item Description"],
+                "Total Quantity": 0,
+                "Nearest Expiry Date": row["Expiry Date"],
+                "Nearest Expiry Quantity": 0
+            }
+
+        grouped[key]["Total Quantity"] += row["Quantity"]
+
+        if row["Expiry Date"] < grouped[key]["Nearest Expiry Date"]:
+            grouped[key]["Nearest Expiry Date"] = row["Expiry Date"]
+
+    for key, item in grouped.items():
+        nearest = item["Nearest Expiry Date"]
+        nearest_qty = 0
+
+        for row in rows:
+            row_key = (row["Item Code"], row["Item Description"])
+            if row_key == key and row["Expiry Date"].date() == nearest.date():
+                nearest_qty += row["Quantity"]
+
+        item["Nearest Expiry Quantity"] = nearest_qty
 
     summary_rows = []
 
-    for (item_code, item_desc), g in raw_df.groupby(["Item Code", "Item Description"], sort=False):
-        total_qty = int(round(g["Quantity"].sum()))
-        nearest_date = g["Expiry Date"].min()
-        nearest_qty = int(round(g.loc[g["Expiry Date"] == nearest_date, "Quantity"].sum()))
-        months_to_expiry = months_between(document_date, nearest_date)
+    for key, item in grouped.items():
+        nearest_date = item["Nearest Expiry Date"]
 
         summary_rows.append({
-            "Item Code": item_code,
-            "Item Description": item_desc,
-            "Item Total Quantity": total_qty,
+            "Item Code": item["Item Code"],
+            "Item Description": item["Item Description"],
+            "Item Total Quantity": int(round(item["Total Quantity"])),
             "Nearest Expiry Date": nearest_date.strftime("%Y-%m-%d"),
-            "Quantity of the Nearest Expiry Date": nearest_qty,
-            "Months to the Nearest Expiry Date": months_to_expiry
+            "Quantity of the Nearest Expiry Date": int(round(item["Nearest Expiry Quantity"])),
+            "Months to the Nearest Expiry Date": months_between(document_date, nearest_date)
         })
 
     return {
